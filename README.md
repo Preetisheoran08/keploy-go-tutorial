@@ -3,7 +3,7 @@
 A single-page documentation site that teaches beginners how to generate API tests
 for a Go app with Keploy. Built with Next.js, MDX and Tailwind CSS.
 
-**Live site:** Add your Vercel link after deploying
+**Live site:** https://keploy-go-tutorial-eosin.vercel.app
 
 ## Features
 

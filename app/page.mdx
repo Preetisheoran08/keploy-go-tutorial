@@ -1,0 +1,479 @@
+# Testing a Go API with Keploy, Without Writing Tests
+
+Turn real API traffic into replayable tests and dependency mocks — without
+starting from a blank test file.
+
+In this tutorial, I will show how I used **Keploy** with a small Go URL
+shortener built with **Gin** and **MongoDB**.
+
+<Callout type="info">I was new to Keploy when I started this exercise, so this guide focuses on what I actually tried, the problems I encountered, and what finally made the workflow click for me.</Callout>
+
+<div className="my-8 grid grid-cols-1 gap-3 sm:grid-cols-4">
+  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
+    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">01</div>
+    <div className="mt-2 font-semibold">Record</div>
+    <div className="mt-1 text-sm text-slate-600 dark:text-slate-400">Exercise the real API</div>
+  </div>
+
+  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
+    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">02</div>
+    <div className="mt-2 font-semibold">Capture</div>
+    <div className="mt-1 text-sm text-slate-600 dark:text-slate-400">Keploy records the traffic</div>
+  </div>
+
+  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
+    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">03</div>
+    <div className="mt-2 font-semibold">Replay</div>
+    <div className="mt-1 text-sm text-slate-600 dark:text-slate-400">Run the generated tests</div>
+  </div>
+
+  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
+    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">04</div>
+    <div className="mt-2 font-semibold">Verify</div>
+    <div className="mt-1 text-sm text-slate-600 dark:text-slate-400">Check that the API still behaves correctly</div>
+  </div>
+</div>
+
+## What we are building
+
+The sample application is a small URL shortener.
+
+It exposes these endpoints:
+
+- `POST /url` creates a short URL.
+- `GET /:code` opens the shortened URL.
+- `GET /verify-email` handles the sample application's email verification flow.
+
+MongoDB stores the URLs.
+
+The goal is simple: use the application normally, let Keploy observe that
+traffic, and then replay the same behaviour as automated tests.
+
+## What you need
+
+Before starting, make sure you have:
+
+- Docker
+- Git
+- Linux, macOS, or Windows with WSL2
+- A working internet connection
+
+### Windows users: use WSL2
+
+I completed this setup on Windows using **Ubuntu through WSL2**.
+
+The important distinction is that the project and its Linux tools are running
+inside WSL. I initially tried running the Next.js project from Windows
+PowerShell even though the project was inside WSL. Windows then reported:
+
+```text
+UNC paths are not supported.
+'next' is not recognized as an internal or external command
+```
+
+The fix was simply to run the Node.js and Keploy commands from the Ubuntu
+terminal.
+
+<Callout type="tip">
+  You can use VS Code on Windows with the WSL extension, but run project
+  commands such as <code>npm</code>, <code>node</code>, and <code>keploy</code>
+  from the WSL terminal.
+</Callout>
+
+## Step 1: Install and verify Keploy
+
+Install Keploy using its installer, then check the installation:
+
+```bash
+keploy --version
+```
+
+I used Keploy **v3.8.58** while working through this tutorial.
+
+Checking the version first is useful because it confirms that the command is
+available before we start debugging anything else.
+
+## Step 2: Get the sample application
+
+Clone the Go samples repository:
+
+```bash
+git clone https://github.com/keploy/samples-go.git
+```
+
+Then move into the Gin + MongoDB example:
+
+```bash
+cd ~/samples-go/gin-mongo
+```
+
+This directory contains the Go application and Docker Compose configuration
+needed to run it.
+
+## Step 3: Make sure the application works first
+
+Before introducing Keploy, I wanted to prove that the application itself was
+healthy.
+
+Start it normally:
+
+```bash
+docker compose up --build
+```
+
+MongoDB starts and the Go application listens on port `8080`.
+
+From a second terminal, create a short URL:
+
+```bash
+curl --request POST \
+  --url http://localhost:8080/url \
+  --header 'content-type: application/json' \
+  --data '{"url": "https://google.com"}'
+```
+
+I received a response similar to:
+
+```json
+{
+  "ts": 1791043344053333251,
+  "url": "http://localhost:8080/Lhr4BWAi"
+}
+```
+
+Your timestamp and short code will be different.
+
+Now follow the generated short URL:
+
+```bash
+curl http://localhost:8080/Lhr4BWAi
+```
+
+The application returned:
+
+```html
+<a href="https://google.com">See Other</a>.
+```
+
+I also tested additional URLs such as:
+
+```text
+https://github.com
+https://keploy.io
+```
+
+At this point I knew the application was working before adding Keploy to the
+picture.
+
+## Step 4: Authenticate Keploy
+
+Keploy requires authentication for this workflow.
+
+My first browser authentication attempt timed out. I also tried the manual
+login approach, but the account did not have the required write scope for that
+method.
+
+The normal browser login eventually worked after I manually opened the
+authentication URL.
+
+Keploy then reported:
+
+```text
+Logged in successfully!
+You are on the Keploy Free plan.
+```
+
+<Callout type="warning">
+  If the browser authentication does not complete automatically, check the
+  generated authentication URL and open it manually instead of repeatedly
+  restarting the command.
+</Callout>
+
+## Step 5: Record test cases
+
+Start Keploy recording with:
+
+```bash
+keploy record -c "docker compose up" --container-name "ginMongoApp"
+```
+
+The important parts are:
+
+- `-c` tells Keploy how to start the application.
+- `--container-name` identifies the application container whose traffic should
+  be captured.
+
+With recording active, use the API from another terminal:
+
+```bash
+curl --request POST \
+  --url http://localhost:8080/url \
+  --header 'content-type: application/json' \
+  --data '{"url": "https://google.com"}'
+```
+
+Then call the generated short URL:
+
+```bash
+curl http://localhost:8080/YOUR_CODE
+```
+
+Make a few different requests if you want more test coverage.
+
+### A recording problem I encountered
+
+My first recording attempt did not complete.
+
+Keploy started the Docker workflow and pulled the required images, but eventually
+reported that the **Keploy agent did not become ready in time**.
+
+Instead of repeatedly running the same command, I separated the application
+from Keploy and started it normally:
+
+```bash
+docker compose up --build
+```
+
+That exposed another problem:
+
+```text
+open /home/sheor/.docker/buildx/.lock: permission denied
+```
+
+The problem was related to Docker configuration ownership inside WSL.
+
+I fixed it with:
+
+```bash
+sudo chown -R $USER:$USER ~/.docker
+```
+
+After that, the normal Docker Compose application started successfully.
+
+<Callout type="tip">
+  This was one of my biggest debugging lessons: when a higher-level tool fails,
+  first prove that the underlying application and environment work on their own.
+</Callout>
+
+## Step 6: Replay the tests
+
+Once test cases are available, replay them with:
+
+```bash
+keploy test -c "docker compose up" --container-name "ginMongoApp" --delay 10
+```
+
+The `--delay 10` gives the application time to start before the recorded
+requests are replayed.
+
+During my successful replay, Keploy started the application and agent and used
+the saved dependency mocks instead of requiring MongoDB to be started as a
+real dependency.
+
+The two replayed tests were:
+
+```text
+test-1 → POST /url
+test-2 → GET /Lhr4BWAi
+```
+
+The final result was:
+
+```text
+Total tests:        2
+Total test passed:  2
+Total test failed:  0
+```
+
+Keploy reported:
+
+```text
+phase:    verified_green
+summary:  All 2 test(s) passed across 1 test-set(s).
+```
+
+## Step 7: Understanding noise
+
+The create-URL response contains a timestamp:
+
+```json
+{
+  "ts": 1718943885198315028,
+  "url": "http://localhost:8080/Lhr4BWAi"
+}
+```
+
+That timestamp naturally changes every time the API runs.
+
+A test should not fail just because the timestamp is different, so Keploy
+supports **noise** for dynamic values.
+
+In the generated test file, I found:
+
+```yaml
+assertions:
+  noise:
+    body.ts: []
+    header.Date: []
+```
+
+The important entry is:
+
+```yaml
+body.ts: []
+```
+
+It tells Keploy not to treat the timestamp as a fixed response value.
+
+<Callout type="info">
+  In my run, this noise configuration was already present in the generated
+  test, so I did not need to manually edit the YAML before the replay passed.
+  If your generated test does not contain the appropriate noise entry, inspect
+  its <code>assertions</code> section before changing it.
+</Callout>
+
+## What just happened?
+
+The whole workflow makes more sense when broken into four ideas.
+
+### Record
+
+Use the application normally and make real API requests.
+
+Keploy observes those interactions and creates replayable test cases.
+
+### Mock
+
+The application may communicate with dependencies such as MongoDB.
+
+Keploy can save those dependency interactions as mocks.
+
+### Replay
+
+Keploy starts the application and sends the recorded requests again.
+
+The saved mocks can provide the dependency responses instead of requiring the
+same live dependency interaction.
+
+### Compare
+
+Keploy compares the application's new behaviour with the recorded behaviour.
+
+This makes it possible to catch unexpected changes without manually rebuilding
+the entire test scenario.
+
+The main idea that clicked for me was this:
+
+> **Start with real application behaviour instead of starting with an empty
+> test file.**
+
+## Mistakes I made
+
+### 1. I initially focused on Keploy instead of the application
+
+When the Keploy agent failed to become ready, I initially treated it as a
+Keploy problem.
+
+Running the application independently showed that the Go application itself
+was healthy.
+
+That narrowed down the debugging problem considerably.
+
+### 2. Docker permissions caused a misleading failure
+
+I encountered:
+
+```text
+permission denied
+```
+
+for Docker Buildx.
+
+The fix was:
+
+```bash
+sudo chown -R $USER:$USER ~/.docker
+```
+
+This reminded me that using `sudo` with development tools can sometimes leave
+files owned by root and cause later commands to fail.
+
+### 3. Browser authentication did not work immediately
+
+The first authentication attempt timed out.
+
+The manual API-key route was not suitable for my account because it did not have
+the required write scope.
+
+Manually opening the normal authentication URL completed the login.
+
+### 4. I misunderstood what recording meant
+
+At first, the word "record" made me think of screen recording.
+
+In this workflow, Keploy recording means capturing application/API interactions
+so they can become test cases and mocks. It is not recording your screen.
+
+<Callout type="tip">
+  My two biggest "a-ha" moments were understanding that Keploy can turn real
+  API traffic into replayable tests, and that dynamic values such as timestamps
+  need to be handled as noise.
+</Callout>
+
+## What I would do differently next time
+
+I would first verify the application independently:
+
+```bash
+docker compose up --build
+```
+
+Then test an endpoint:
+
+```bash
+curl --request POST \
+  --url http://localhost:8080/url \
+  --header 'content-type: application/json' \
+  --data '{"url": "https://google.com"}'
+```
+
+Only after confirming that the application works would I start troubleshooting
+Keploy.
+
+That separates problems into three easier categories:
+
+```text
+Application
+    ↓
+Docker / WSL
+    ↓
+Keploy
+```
+
+## Next steps
+
+Now that the basic workflow is clear, try applying the same approach to your
+own Go application.
+
+Some useful next steps are:
+
+- Generate more API test cases.
+- Try another Go quickstart.
+- Add Keploy to CI.
+- Explore dependency mocks with a larger application.
+- Inspect generated test cases and identify dynamic values that should be
+  treated as noise.
+
+## Final takeaway
+
+Keploy changed how I think about getting started with API regression testing.
+
+Instead of beginning with a blank test file and manually constructing every
+mock, I can begin with behaviour that already exists in the application.
+
+For me, the workflow became:
+
+**Run → Exercise → Record → Replay → Validate**
+
+That made API testing feel much less intimidating and gave me a practical way
+to understand where test cases and mocks come from.
